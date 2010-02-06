@@ -1,0 +1,200 @@
+#!/bin/bash
+#
+# ddns-client
+#
+# A simple dynamic DNS client supporting dyndns.org for Linux.
+#
+# V. K. Karakasis       <vkarak@gmail.com>
+#
+
+program_name=$(basename $0)
+logger_proginfo="$program_name[$$]"
+
+#
+# Checks if the given IP is valid
+#
+is_valid_ip()
+{
+    is_valid=$(echo $1 | \
+        grep -o '\([[:digit:]]\{1,3\}\.\)\{3\}[[:digit:]]\{1,3\}')
+
+    if [ -z $is_valid ]; then
+        logger -p "user.error" -t "$logger_proginfo" \
+            "\`$1' is not a valid IP address"
+        return 1
+    fi
+
+    return 0
+}
+
+config_file=${CONFIG_FILE:-"/etc/config/ddns-bkk"}
+runinfo_dir=${RUNINFO_DIR:-"/var/run"}
+
+# Parse configuration file
+if [ ! -e "$config_file" ]; then
+    logger -p "user.error" -t "$logger_proginfo" \
+        "\`$config_file' not found. Exiting..."
+    exit 1
+fi
+
+service_name=$(grep -e '^name' "$config_file" | awk '{ print $2 }')
+provider=$(grep -e '^provider' "$config_file" | awk '{ print $2 }')
+hostname=$(grep -e '^hostname' "$config_file" | awk '{ print $2 }')
+username=$(grep -e '^username' "$config_file" | awk '{ print $2 }')
+password=$(grep -e '^password' "$config_file" | awk '{ print $2 }')
+check_interval=$(grep -e '^check_interval' "$config_file" | awk '{ print $2 }')
+force_interval=$(grep -e '^force_interval' "$config_file" | awk '{ print $2 }')
+
+if [ -z $service_name ]; then
+    logger -p "user.error" -t "$logger_proginfo[$$]" \
+        "no service name specified. Exiting..."
+    exit 1
+fi
+
+if [ -z $provider ]; then
+    logger -p "user.warning" -t "$logger_proginfo" \
+        "no provider specified. Assuming \`dyndns.org'."
+    provider="dyndns.org"
+fi
+
+if [ "$provider" != "dyndns.org" ]; then
+    logger -p "user.error" -t "$logger_proginfo" \
+        "provider other than \`dyndns.org' provided. Exiting..."
+    exit 1
+fi
+
+if [ -z $hostname ]; then
+    logger -p "user.error" -t "$logger_proginfo" \
+        "no hostname provided. Exiting..."
+    exit 1
+fi
+
+if [ -z $username ]; then
+    logger -p "user.error" -t "$logger_proginfo" \
+        "no username provided. Exiting..."
+    exit 1
+fi
+
+if [ -z $password ]; then
+    logger -p "user.error" -t "$logger_proginfo" \
+        "no pasword provided. Exiting..."
+    exit 1
+fi
+
+if [ -z $check_interval ]; then
+    logger -p "user.warning" -t "$logger_proginfo" \
+        "no check interval specified. Assuming 10 min."
+    check_interval=$((10*60))
+fi
+
+if [ -z $force_interval ]; then
+    logger -p "user.warning" -t "$logger_proginfo" \
+        "no force interval specified. Assuming 10 days."
+    force_interval=$((10*24*3600))
+fi
+
+# Check if a client is already running for the specified service and
+# terminate it
+
+if [ ! -d "$runinfo_dir" ]; then
+    logger -p "user.error" -t "$logger_proginfo" \
+        "\`$runinfo_dir' is not a directory. Exiting..."
+    exit 1
+fi
+
+if [ ! -e "$runinfo_dir/$service_name.pid" ]; then
+    logger -p "user.warning" -t "$logger_proginfo" \
+        "pidfile does not exist, assuming no other ddns-client is running."
+else
+    pid_to_kill=$(cat "$runinfo_dir/$service_name.pid")
+    logger -p "user.warning" -t "$logger_proginfo" \
+        "another ddns-client[$pid_to_kill] is probably running. Killing..."
+    kill $pid_to_kill 2> /dev/null
+fi
+
+echo $$ > "$runinfo_dir/$service_name.pid"
+
+while [ true ]; do
+    if [ ! -e "$runinfo_dir/$service_name.ip" ]; then
+        # Run DNS lookup to determine the registered IP. This is not safe,
+        # however, and can lead to an abusive update. It is recommended to
+        # provide an initial IP file with the registered IP address of your host
+        # at the time.
+        logger -p "user.warning" -t "$logger_proginfo" \
+            "ip file does not exist, I will run a DNS lookup."
+
+        registered_ip=$(nslookup $hostname | grep -A1 $hostname | tail -n1 | \
+            grep -o '\([[:digit:]]\{1,3\}\.\)\{3\}[[:digit:]]\{1,3\}')
+    else
+        # Read the cached value
+        registered_ip=$(cat "$runinfo_dir/$service_name.ip")
+    fi
+
+    logger -p "user.info" -t "$logger_proginfo" \
+        "checking registered ip... $registered_ip"
+
+    if [ ! "is_valid_ip $registered_ip" ]; then
+        logger -p "user.error" -t "$logger_proginfo" \
+            "registered IP is invalid. I will retry after 1 min."
+        sleep 60
+        continue
+    fi
+
+    # Retrieve the current IP
+    current_ip=$(wget -O - \
+        "http://www.whatismyip.com/automation/n09230945.asp" 2> /dev/null)
+    logger -p "user.info" -t "$logger_proginfo" \
+        "checking current ip... $current_ip"
+
+    if [ ! "is_valid_ip $current_ip" ]; then
+        logger -p "user.error" -t "$logger_proginfo" \
+            "current IP is invalid. I will retry after 1 min."
+        sleep 60
+        continue
+    fi
+
+    # Check when was last update
+    if [ ! -e "$runinfo_dir/$service_name.update" ]; then
+        logger -p "user.warning" -t "$logger_proginfo" \
+            "could not retrieve the last update time, assuming last boot."
+        last_update=$(grep -e '^btime' /proc/stat | awk '{ print $2 }')
+    else
+        last_update=$(cat "$runinfo_dir/$service_name.update")
+    fi
+
+    current_time=$(date +%s)
+    update_interval=$((current_time - last_update))
+
+    if [ $update_interval -ge $force_interval ]; then
+        logger -p "user.info" -t "$logger_proginfo" \
+            "$update_interval s have been elapsed since last update. Update will be forced."
+        force_update="yes"
+    else
+        force_update="no"
+    fi
+
+    if [ $current_ip != $registered_ip ] || [ $force_update == "yes" ]; then
+        logger -p "user.info" -t "$logger_proginfo" \
+            "update is needed. Starting update process..."
+
+        reply=$(wget -O - "https://$username:$password@members.dyndns.org/nic/update?hostname=$hostname&myip=$current_ip" 2> /dev/null)
+
+        if [ -z $reply ]; then
+            logger -p "user.warning" -t "$logger_proginfo" \
+                "update did not reply. Your network might experience problems."
+            continue
+        fi
+
+        logger -p "user.info" -t "$logger_proginfo" \
+            "update process replied: $reply"
+
+        registered_ip=$current_ip
+        echo $registered_ip > "$runinfo_dir/$service_name.ip"
+        echo $current_time > "$runinfo_dir/$service_name.update"
+    else
+        logger -p "user.info" -t "$logger_proginfo" \
+            "update is not needed."
+    fi
+
+    sleep $check_interval
+done
