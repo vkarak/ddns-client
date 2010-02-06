@@ -179,7 +179,7 @@ while [ true ]; do
 
         reply=$(wget -O - "https://$username:$password@members.dyndns.org/nic/update?hostname=$hostname&myip=$current_ip" 2> /dev/null)
 
-        if [ -z $reply ]; then
+        if [ -z "$reply" ]; then
             logger -p "user.warning" -t "$logger_proginfo" \
                 "update did not reply. Your network might experience problems."
             continue
