@@ -27,8 +27,8 @@ is_valid_ip()
     return 0
 }
 
-config_file=${CONFIG_FILE:-"/etc/config/ddns-bkk"}
-runinfo_dir=${RUNINFO_DIR:-"/var/run"}
+config_file=${CONFIG_FILE:-"/etc/ddns/ddns.conf"}
+runinfo_dir=${RUNINFO_DIR:-"/var/run/ddns"}
 
 # Parse configuration file
 if [ ! -e "$config_file" ]; then
