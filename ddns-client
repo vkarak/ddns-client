@@ -188,6 +188,62 @@ while [ true ]; do
         logger -p "user.info" -t "$logger_proginfo" \
             "update process replied: $reply"
 
+        # Check and interpret return code
+        case "$reply" in
+            "good $current_ip")
+                logger -p "user.info" -t "$logger_proginfo" \
+                    "Update was successful." ;;
+            "nochg")
+                logger -p "user.warning" -t "$logger_proginfo" \
+                    "Abusive update. Cowardly exiting..."
+                exit 1 ;;
+            "badauth")
+                logger -p "user.error" -t "$logger_proginfo" \
+                    "Invalid username or password. Exiting..."
+                exit 1 ;;
+            "!donator")
+                logger -p "user.error" -t "$logger_proginfo" \
+                    "An option specified is only available to credited users. Exiting..."
+                exit 1 ;;
+            "notfqdn")
+                logger -p "user.error" -t "$logger_proginfo" \
+                    "Hostname is not a fully-qualified domain name. Exiting..."
+                exit 1 ;;
+            "nohost")
+                logger -p "user.error" -t "$logger_proginfo" \
+                    "The hostname specified does not exist. Exiting..."
+                exit 1 ;;
+            "numhost")
+                logger -p "user.error" -t "$logger_proginfo" \
+                    "Too many hosts. Exiting..."
+                exit 1 ;;
+            "abuse")
+                logger -p "user.error" -t "$logger_proginfo" \
+                    "Hostname is blocked for abuse."
+                continue ;;
+            "badagent")
+                logger -p "user.error" -t "$logger_proginfo" \
+                    "User agent was not sent of invalid HTTP method used. Exiting..."
+                exit 1 ;;
+            "good 127.0.0.1")
+                logger -p "user.error" -t "$logger_proginfo" \
+                    "Update request ignored."
+                continue ;;
+            "dnserr")
+                logger -p "user.error" -t "$logger_proginfo" \
+                    "DNS error."
+                continue ;;
+            "911")
+                logger -p "user.error" -t "$logger_proginfo" \
+                    "Internal server error."
+                continue ;;
+            *)
+                logger -p "user.info" -t "$logger_proginfo" \
+                    "Unexpected error. Exiting..."
+                exit 2 ;;
+        esac
+        
+        # Update was successful; update your logs
         registered_ip=$current_ip
         echo $registered_ip > "$runinfo_dir/$service_name.ip"
         echo $current_time > "$runinfo_dir/$service_name.update"
