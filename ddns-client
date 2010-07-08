@@ -28,7 +28,7 @@ is_valid_ip()
 }
 
 config_file=${CONFIG_FILE:-"/etc/ddns/ddns.conf"}
-runinfo_dir=${RUNINFO_DIR:-"/var/run/ddns"}
+runinfo_dir=${RUNINFO_DIR:-"/etc/ddns"}
 
 # Parse configuration file
 if [ ! -e "$config_file" ]; then
@@ -141,8 +141,11 @@ while [ true ]; do
     fi
 
     # Retrieve the current IP
-    current_ip=$(wget -O - \
-        "http://www.whatismyip.com/automation/n09230945.asp" 2> /dev/null)
+    # Use absolute address to avoid DNS problems.
+    # This is the address of `checkip.dyndns.com'.
+    current_ip=$(wget -nv -O - \
+        'http://208.78.70.70' 2> /dev/null | \
+        grep -o -e '\([[:digit:]]\{1,3\}\.\)\{3\}[[:digit:]]\{1,3\}')
     logger -p "user.info" -t "$logger_proginfo" \
         "checking current ip... $current_ip"
 
