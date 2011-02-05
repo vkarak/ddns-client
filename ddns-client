@@ -9,13 +9,26 @@
 
 program_name=$(basename $0)
 config_file="/etc/ddns/ddns.conf"
-pid_file="/var/run/$program_name.pid"
+pidfile="/var/run/$program_name.pid"
 cachedir="/var/cache/ddns"
 
 # Timeout in seconds for retrying after a non-critical failure
 retry_timeout=60
 
 logger_proginfo="$program_name[$$]"
+
+#
+# Handler for the TERM signal
+#
+# Do some cleanup and exit.
+#
+sigterm_handler()
+{
+    logger -p "user.info" -t "$logger_proginfo" \
+        "Received the TERM signal. Exiting..."
+    /bin/rm -f $pidfile
+    exit 0
+}
 
 #
 # Checks if the given IP is valid
@@ -34,6 +47,23 @@ is_valid_ip()
     return 0
 }
 
+#
+# Sleep interruptibly
+#
+sleep_int()
+{
+    if [ -z $1 ]; then
+        return 0;
+    fi
+
+    sleep $1 &
+    wait $! || return 1
+    return 0
+}
+
+# Install signal handlers
+trap sigterm_handler TERM
+
 # Parse configuration file
 if [ ! -e "$config_file" ]; then
     logger -p "user.error" -t "$logger_proginfo" \
@@ -50,7 +80,7 @@ check_interval=$(grep -e '^check_interval' "$config_file" | awk '{ print $2 }')
 force_interval=$(grep -e '^force_interval' "$config_file" | awk '{ print $2 }')
 
 if [ -z $service_name ]; then
-    logger -p "user.error" -t "$logger_proginfo[$$]" \
+    logger -p "user.error" -t "$logger_proginfo" \
         "no service name specified. Exiting..."
     exit 1
 fi
@@ -98,15 +128,15 @@ if [ -z $force_interval ]; then
 fi
 
 # Check if a client is already running and terminate it
-if [ -e "$pid_file" ] && kill -0 $(cat "$pid_file") 2> /dev/null; then
-    pid_to_kill=$(cat "$pid_file")
+if [ -e "$pidfile" ] && kill -0 $(cat "$pidfile") 2> /dev/null; then
+    pid_to_kill=$(cat "$pidfile")
     logger -p "user.warning" -t "$logger_proginfo" \
         "another ddns-client[$pid_to_kill] is running."\
         "I will now terminate it."
     kill -TERM $pid_to_kill 2> /dev/null
 fi
 
-echo $$ > "$pid_file"
+echo $$ > "$pidfile"
 
 while [ true ]; do
     if [ ! -e "$cachedir/$service_name.ip" ]; then
@@ -131,7 +161,7 @@ while [ true ]; do
     if ! is_valid_ip "$registered_ip"; then
         logger -p "user.error" -t "$logger_proginfo" \
             "registered IP is invalid. I will retry after $retry_timeout sec."
-        sleep $retry_timeout
+        sleep_int $retry_timeout
         continue
     fi
 
@@ -154,7 +184,7 @@ while [ true ]; do
         logger -p "user.error" -t "$logger_proginfo" \
             "could not retrieve the current IP address; i will retry after"\
             "$retry_timeout sec."
-        sleep $retry_timeout
+        sleep_int $retry_timeout
         continue
     fi
 
@@ -260,5 +290,5 @@ while [ true ]; do
             "update is not needed."
     fi
 
-    sleep $check_interval
+    sleep_int $check_interval
 done
