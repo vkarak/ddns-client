@@ -8,6 +8,13 @@
 #
 
 program_name=$(basename $0)
+config_file="/etc/ddns/ddns.conf"
+pid_file="/var/run/$program_name.pid"
+cachedir="/var/cache/ddns"
+
+# Timeout in seconds for retrying after a non-critical failure
+retry_timeout=60
+
 logger_proginfo="$program_name[$$]"
 
 #
@@ -26,9 +33,6 @@ is_valid_ip()
 
     return 0
 }
-
-config_file=${CONFIG_FILE:-"/etc/ddns/ddns.conf"}
-runinfo_dir=${RUNINFO_DIR:-"/etc/ddns"}
 
 # Parse configuration file
 if [ ! -e "$config_file" ]; then
@@ -93,41 +97,32 @@ if [ -z $force_interval ]; then
     force_interval=$((10*24*3600))
 fi
 
-# Check if a client is already running for the specified service and
-# terminate it
-
-if [ ! -d "$runinfo_dir" ]; then
-    logger -p "user.error" -t "$logger_proginfo" \
-        "\`$runinfo_dir' is not a directory. Exiting..."
-    exit 1
+# Check if a client is already running and terminate it
+if [ -e "$pid_file" ] && kill -0 $(cat "$pid_file") 2> /dev/null; then
+    pid_to_kill=$(cat "$pid_file")
+    logger -p "user.warning" -t "$logger_proginfo" \
+        "another ddns-client[$pid_to_kill] is running."\
+        "I will now terminate it."
+    kill -TERM $pid_to_kill 2> /dev/null
 fi
 
-if [ ! -e "$runinfo_dir/$service_name.pid" ]; then
-    logger -p "user.warning" -t "$logger_proginfo" \
-        "pidfile does not exist, assuming no other ddns-client is running."
-else
-    pid_to_kill=$(cat "$runinfo_dir/$service_name.pid")
-    logger -p "user.warning" -t "$logger_proginfo" \
-        "another ddns-client[$pid_to_kill] is probably running. Killing..."
-    kill $pid_to_kill 2> /dev/null
-fi
-
-echo $$ > "$runinfo_dir/$service_name.pid"
+echo $$ > "$pid_file"
 
 while [ true ]; do
-    if [ ! -e "$runinfo_dir/$service_name.ip" ]; then
+    if [ ! -e "$cachedir/$service_name.ip" ]; then
         # Run DNS lookup to determine the registered IP. This is not safe,
-        # however, and can lead to an abusive update. It is recommended to
-        # provide an initial IP file with the registered IP address of your host
-        # at the time.
+        # however, and can lead to an abusive update, since the registered IP
+        # might not have been propagated yet to your DNS server. It is
+        # recommended to provide an initial IP file with the registered IP
+        # address of your host at the time.
         logger -p "user.warning" -t "$logger_proginfo" \
-            "ip file does not exist, I will run a DNS lookup."
+            "ip file does not exist. I will run a DNS lookup."
 
         registered_ip=$(nslookup $hostname | grep -A1 $hostname | tail -n1 | \
             grep -o '\([[:digit:]]\{1,3\}\.\)\{3\}[[:digit:]]\{1,3\}')
     else
         # Read the cached value
-        registered_ip=$(cat "$runinfo_dir/$service_name.ip")
+        registered_ip=$(cat "$cachedir/$service_name.ip")
     fi
 
     logger -p "user.info" -t "$logger_proginfo" \
@@ -135,15 +130,15 @@ while [ true ]; do
 
     if ! is_valid_ip "$registered_ip"; then
         logger -p "user.error" -t "$logger_proginfo" \
-            "registered IP is invalid. I will retry after 1 min."
-        sleep 60
+            "registered IP is invalid. I will retry after $retry_timeout sec."
+        sleep $retry_timeout
         continue
     fi
 
     # Retrieve the current IP
     # Use absolute address to avoid DNS failures.
     # This is the address pool of `checkip.dyndns.com'.
-    check_srv_pool="204.13.248.70 208.78.69.70 91.198.22.70"
+    check_srv_pool="204.13.248.70 208.78.69.70 91.198.22.70 91.198.22.71"
     for srv_ip in $check_srv_pool; do
 	current_ip=$(wget --tries 4 --timeout 3 -nv -O - \
             "http://$srv_ip" 2> /dev/null | \
@@ -157,18 +152,19 @@ while [ true ]; do
 
     if ! is_valid_ip "$current_ip"; then
         logger -p "user.error" -t "$logger_proginfo" \
-            "could not retrieve the current IP address; i will retry after 1 min."
-        sleep 60
+            "could not retrieve the current IP address; i will retry after"\
+            "$retry_timeout sec."
+        sleep $retry_timeout
         continue
     fi
 
     # Check when was last update
-    if [ ! -e "$runinfo_dir/$service_name.update" ]; then
+    if [ ! -e "$cachedir/$service_name.update" ]; then
         logger -p "user.warning" -t "$logger_proginfo" \
             "could not retrieve the last update time, assuming last boot."
         last_update=$(grep -e '^btime' /proc/stat | awk '{ print $2 }')
     else
-        last_update=$(cat "$runinfo_dir/$service_name.update")
+        last_update=$(cat "$cachedir/$service_name.update")
     fi
 
     current_time=$(date +%s)
@@ -176,7 +172,8 @@ while [ true ]; do
 
     if [ $update_interval -ge $force_interval ]; then
         logger -p "user.info" -t "$logger_proginfo" \
-            "$update_interval s have been elapsed since last update. Update will be forced."
+            "$update_interval sec have been elapsed since last update."\
+            "Update will be forced."
         force_update="yes"
     else
         force_update="no"
@@ -212,7 +209,8 @@ while [ true ]; do
                 exit 1 ;;
             "!donator")
                 logger -p "user.error" -t "$logger_proginfo" \
-                    "An option specified is only available to credited users. Exiting..."
+                    "An option specified is only available to credited users."
+                    " Exiting..."
                 exit 1 ;;
             "notfqdn")
                 logger -p "user.error" -t "$logger_proginfo" \
@@ -232,7 +230,8 @@ while [ true ]; do
                 continue ;;
             "badagent")
                 logger -p "user.error" -t "$logger_proginfo" \
-                    "User agent was not sent of invalid HTTP method used. Exiting..."
+                    "User agent was not sent or HTTP method is not permitted."
+                    "Exiting..."
                 exit 1 ;;
             "good 127.0.0.1")
                 logger -p "user.error" -t "$logger_proginfo" \
@@ -254,8 +253,8 @@ while [ true ]; do
         
         # Update was successful; update your logs
         registered_ip=$current_ip
-        echo $registered_ip > "$runinfo_dir/$service_name.ip"
-        echo $current_time > "$runinfo_dir/$service_name.update"
+        echo $registered_ip > "$cachedir/$service_name.ip"
+        echo $current_time > "$cachedir/$service_name.update"
     else
         logger -p "user.info" -t "$logger_proginfo" \
             "update is not needed."
