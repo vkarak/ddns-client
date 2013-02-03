@@ -168,7 +168,7 @@ while [ true ]; do
     # Retrieve the current IP
     # Use absolute address to avoid DNS failures.
     # This is the address pool of `checkip.dyndns.com'.
-    check_srv_pool="204.13.248.70 208.78.69.70 91.198.22.70 91.198.22.71"
+    check_srv_pool="91.198.22.70 216.146.38.70 216.146.39.70"
     for srv_ip in $check_srv_pool; do
 	current_ip=$(wget --tries 4 --timeout 3 -nv -O - \
             "http://$srv_ip" 2> /dev/null | \
